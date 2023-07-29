@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Resources to build phonebook app, include EC2,RDS and ALB
+Parameters:
+  Subnets:
+    Description: Choose your subnets.
+    Type: List<AWS::EC2::Subnet::Id> 
+  KeyName:
+    Description: Please enter your valid Key pair.
+    Type: AWS::EC2::KeyPair::KeyName
+  MyVPC:
+    Description: VPC Id of your existing account.
+    Type: AWS::EC2::VPC::Id 
+
+Resources:
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL Traffic
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: MySQLSecGroup
+
+  PhonebookDatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: onur-phonebook-rds
+      DBName: clarusway_phonebook
+      Engine: MYSQL
+      EngineVersion: "8.0.33"
+      Port: "3306"
+      VPCSecurityGroups: 
+        - !GetAtt DBSecurityGroup.GroupId
+      MasterUserPassword: Serdar_1
+      MasterUsername: admin
+      DBInstanceClass: "db.t2.micro"
+      AllocatedStorage: "20"
+      AutoMinorVersionUpgrade: false
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      MultiAZ: false
+      PubliclyAccessible: true
+
+  ALBSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Enable HTTP for ALB
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0    
+        Tags:
+          - Value: Name
+            Key: PhonebookAppSecGrp
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+      Subnets: !Ref Subnets
+      Type: application   
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: # Required
+        - TargetGroupArn: !Ref WebServerTG
+          Type: forward
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  WebServerTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref MyVPC
+
+  WebServerLT:
+      Type: AWS::EC2::LaunchTemplate
+      Properties:
+        LaunchTemplateData:
+          ImageId: ami-022e1a32d3f742bd8
+          InstanceType: t2.micro
+          KeyName: !Ref KeyName
+          SecurityGroupIds:
+            - !GetAtt ALBSecurityGroup.GroupId
+          TagSpecifications:
+            - ResourceType: instance
+              Tags:
+                - Key: Name
+                  Value: !Sub Web Server of ${AWS::StackName} Stack
+          UserData: !Base64 |
+                  #!/bin/bash -x
+                  yum update -y
+                  yum install python3 -y
+                  yum install pip -y
+                  pip install flask
+                  pip install flask_mysql
+
+
+                  cd /home/ec2-user
+                  mkdir templates
+
+                  MyDBURI="onur-phonebook-rds.cwwbhn1p1fhp.us-east-1.rds.amazonaws.com"
+                  echo "${MyDBURI}" > /home/ec2-user/dbserver.endpoint
+
+                  FOLDER="https://raw.githubusercontent.com/ompayat/my-repository/main/004-phonebook-web-application/"
+
+
+                  curl -o "/home/ec2-user/templates/index.html" -L "${FOLDER}templates/index.html"
+                  curl -o "/home/ec2-user/templates/add-update.html" -L "${FOLDER}templates/add-update.html"
+                  curl -o "/home/ec2-user/templates/delete.html" -L "${FOLDER}templates/delete.html"
+                  curl -o "/home/ec2-user/phonebook-app.py" -L "${FOLDER}phonebook-app.py"
+
+                  python3 /home/ec2-user/phonebook-app.py
+
+  WebServerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        !GetAZs ""
+      DesiredCapacity: "2"
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLT
+        Version: !GetAtt WebServerLT.LatestVersionNumber
+      MaxSize: "3"
+      MinSize: "1"
+      TargetGroupARNs:
+        - !Ref WebServerTG  
+
+
+
+
+#Outputs:
